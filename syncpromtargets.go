@@ -12,7 +12,8 @@ import (
 	"log"
 	"strconv"
 	"sync"
-	"time"
+	"io"
+	"github.com/docker/docker/api/types/events"
 )
 
 const targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
@@ -131,7 +132,7 @@ func writeTargetsFile(serviceAddresses map[string][]string, previousHash string)
 	return newHash, nil
 }
 
-func syncTargetsOnce(cli *client.Client, previousHash string, conf *ConfigContext) (string, error) {
+func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[string][]string, error) {
 	serviceAddresses := make(map[string][]string)
 
 	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
@@ -142,9 +143,48 @@ func syncTargetsOnce(cli *client.Client, previousHash string, conf *ConfigContex
 		return "", err
 	}
 
-	newHash, err := writeTargetsFile(serviceAddresses, previousHash)
+	newHash, err := writeTargetsFile(serviceAddresses, "")
 
-	return newHash, err
+	return newHash, serviceAddresses, err
+}
+
+func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices map[string][]string) {
+
+	var (
+		done chan struct{}
+		ctx = context.Background()
+	)
+	msgs, errs := cli.Events(ctx, types.EventsOptions{})
+	go func() {
+		for {
+			select  {
+			case e := <-errs:
+				if e == io.EOF {
+					done <- true
+				} else {
+					log.Printf("watchEvents: error: %s", e)
+				}
+			}
+		}
+	}()
+
+	for {
+		select {
+		case m := <-msgs:
+			if m.Type == events.ContainerEventType {
+				switch (m.Action) {
+				case "create":
+					// new
+				case "start":
+					// new
+				case "stop":
+					// remove
+				case "kill":
+					// remove
+				}
+			}
+		}
+	}
 }
 
 func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup) {
@@ -152,16 +192,10 @@ func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitG
 
 	log.Printf("syncPromTargetsTask: starting")
 
-	previousHash := ""
-
-	for {
-		newHash, err := syncTargetsOnce(cli, previousHash, conf)
-		if err != nil {
-			log.Printf("syncPromTargetsTask: error:", err)
-		} else {
-			previousHash = newHash
-		}
-
-		time.Sleep(5 * time.Second)
+	newHash, startTasks, err := syncTargetsOnce(cli, conf)
+	if err != nil {
+		log.Printf("syncPromTargetsTask: error:", err)
 	}
+	// start watch
+	watchEvents(cli, conf, newHash, startTasks)
 }
