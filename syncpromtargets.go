@@ -81,7 +81,7 @@ func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
 
 	for _, task := range tasks {
 		// TODO: this filter could probably be done with the TaskList() call more efficiently?
-		syncTask(task, serviceAddresses)
+		syncTask(&task, serviceAddresses)
 	}
 
 	return nil
@@ -106,7 +106,6 @@ func syncTask(task *swarm.Task, serviceAddresses *serviceMap) {
 
 	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
 		ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
-
 
 
 		serviceAddresses.Append(svcName, ServiceEndpoint{
@@ -216,9 +215,8 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 							log.Printf("watchEvents: error inspecting task: %s", err)
 						}
 
-						syncTask(task, initialServices)
+						syncTask(&task, initialServices)
 
-						var err error
 						prevHash, err = writeTargetsFile(initialServices, prevHash)
 						if err != nil {
 							log.Printf("watchEvents: error writing targets: %s", err)
