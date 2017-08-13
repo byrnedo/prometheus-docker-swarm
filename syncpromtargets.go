@@ -136,11 +136,11 @@ func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[strin
 	serviceAddresses := make(map[string][]string)
 
 	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	if err := syncSwarmTasks(serviceAddresses, cli); err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	newHash, err := writeTargetsFile(serviceAddresses, "")
@@ -148,10 +148,11 @@ func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[strin
 	return newHash, serviceAddresses, err
 }
 
+// TODO take a channel to push updates onto
 func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices map[string][]string) {
 
 	var (
-		done chan struct{}
+		done chan bool
 		ctx = context.Background()
 	)
 	msgs, errs := cli.Events(ctx, types.EventsOptions{})
@@ -170,23 +171,28 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 
 	for {
 		select {
+		case <-done:
+			return
 		case m := <-msgs:
 			if m.Type == events.ContainerEventType {
 				switch (m.Action) {
 				case "create":
-					// new
 				case "start":
-					// new
+					//name := m.Actor.Attributes["com.docker.swarm.service.name"]
+					// Get task
+					// Push onto services map
 				case "stop":
-					// remove
 				case "kill":
-					// remove
+					//name := m.Actor.Attributes["com.docker.swarm.service.name"]
+					// delete specific task from services
 				}
 			}
 		}
 	}
 }
 
+// TODO create a master services channel that will be source of truth and pass to watchEvents
+// Let that channel select do the file write
 func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -196,6 +202,7 @@ func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitG
 	if err != nil {
 		log.Printf("syncPromTargetsTask: error:", err)
 	}
+	// TODO spin off a  sync targets periodically for consistency in case we screw up the eventsx
 	// start watch
 	watchEvents(cli, conf, newHash, startTasks)
 }
