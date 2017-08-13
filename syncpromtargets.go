@@ -188,13 +188,16 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 		case m := <-msgs:
 			if m.Type == events.ContainerEventType {
 				switch (m.Action) {
-				case "create":
-				case "start":
+				case "create", "start":
 					//name := m.Actor.Attributes["com.docker.swarm.service.name"]
 					// Get task
 					// Push onto services map
-				case "stop":
-				case "kill":
+					var err error
+					prevHash, err = writeTargetsFile(initialServices, prevHash)
+					if err != nil {
+						log.Printf("watchEvents: error writing targets: %s", err)
+					}
+				case "stop", "kill":
 					svcName := m.Actor.Attributes["com.docker.swarm.service.name"]
 					taskId := m.ID
 					if _, ok := initialServices[svcName]; ok {
@@ -204,6 +207,11 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 								break
 							}
 						}
+					}
+					var err error
+					prevHash, err = writeTargetsFile(initialServices, prevHash)
+					if err != nil {
+						log.Printf("watchEvents: error writing targets: %s", err)
 					}
 					// delete specific task from services
 				}
