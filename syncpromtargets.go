@@ -18,9 +18,18 @@ import (
 
 const targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
 
+
+var (
+	ServicesMap *serviceMap
+)
+
+func init(){
+	ServicesMap = NewServiceMap()
+}
+
 // host networking not supported in Docker Swarm, so we have to
 // have specialized support for it
-func syncHostNetworkedContainers(serviceAddresses map[string][]ServiceEndpoint, cli *client.Client, conf *ConfigContext) error {
+func syncHostNetworkedContainers(serviceAddresses *serviceMap, cli *client.Client, conf *ConfigContext) error {
 	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
 	if err != nil {
 		return err
@@ -45,12 +54,10 @@ func syncHostNetworkedContainers(serviceAddresses map[string][]ServiceEndpoint, 
 		if isHost && len(container.Names) > 0 && len(container.Names[0]) > 1 {
 			// for some reason "$ docker run --name foo" yields "/foo"
 			serviceName := container.Names[0][1:]
-
-			serviceAddresses[serviceName] = append(serviceAddresses[serviceName], ServiceEndpoint{
+			serviceAddresses.Append(serviceName, ServiceEndpoint{
 				TaskID: container.ID,
 				Port: endpointPort,
 				Ip: conf.HostIp,
-
 			})
 		} else {
 			log.Printf("is not host networked container")
@@ -60,7 +67,7 @@ func syncHostNetworkedContainers(serviceAddresses map[string][]ServiceEndpoint, 
 	return nil
 }
 
-func syncSwarmTasks(serviceAddresses map[string][]ServiceEndpoint, cli *client.Client) error {
+func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
 	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
 	if err != nil {
 		return err
@@ -95,7 +102,7 @@ func syncSwarmTasks(serviceAddresses map[string][]ServiceEndpoint, cli *client.C
 
 			taskServiceName := serviceById[task.ServiceID].Spec.Name
 
-			serviceAddresses[taskServiceName] = append(serviceAddresses[taskServiceName], ServiceEndpoint{
+			serviceAddresses.Append(taskServiceName, ServiceEndpoint{
 				TaskID: task.ID,
 				Port: metricsPort,
 				Ip: ip,
@@ -106,10 +113,11 @@ func syncSwarmTasks(serviceAddresses map[string][]ServiceEndpoint, cli *client.C
 	return nil
 }
 
-func writeTargetsFile(serviceAddresses map[string][]ServiceEndpoint, previousHash string) (string, error) {
+func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string, error) {
 	promServiceTargetsFileContent := PromServiceTargetsFile{}
 
-	for serviceId, endpoints := range serviceAddresses {
+	svcMapCopy := serviceAddresses.Copy()
+	for serviceId, endpoints := range svcMapCopy.Data {
 		labels := map[string]string{
 			"job": serviceId,
 		}
@@ -144,8 +152,7 @@ func writeTargetsFile(serviceAddresses map[string][]ServiceEndpoint, previousHas
 	return newHash, nil
 }
 
-func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[string][]ServiceEndpoint, error) {
-	serviceAddresses := make(map[string][]ServiceEndpoint)
+func syncTargetsOnce(cli *client.Client, conf *ConfigContext, serviceAddresses *serviceMap) (string, *serviceMap, error) {
 
 	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
 		return "", nil, err
@@ -161,7 +168,7 @@ func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[strin
 }
 
 // TODO take a channel to push updates onto
-func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices map[string][]ServiceEndpoint) {
+func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices *serviceMap) {
 
 	var (
 		done chan bool
@@ -200,10 +207,12 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 				case "stop", "kill":
 					svcName := m.Actor.Attributes["com.docker.swarm.service.name"]
 					taskId := m.ID
-					if _, ok := initialServices[svcName]; ok {
-						for idx, e := range initialServices[svcName] {
+					if initialServices.Has(svcName) {
+						endpoints := initialServices.Get(svcName)
+						for idx, e := range endpoints {
 							if e.TaskID == taskId {
-								initialServices[svcName] = append(initialServices[svcName][:idx], initialServices[svcName][idx+1:]...)
+								endpoints = append(endpoints[:idx], endpoints[idx+1:]...)
+								initialServices.Set(svcName, endpoints)
 								break
 							}
 						}
@@ -227,11 +236,11 @@ func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitG
 
 	log.Printf("syncPromTargetsTask: starting")
 
-	newHash, startTasks, err := syncTargetsOnce(cli, conf)
+	newHash, _, err := syncTargetsOnce(cli, conf, ServicesMap)
 	if err != nil {
 		log.Printf("syncPromTargetsTask: error:", err)
 	}
 	// TODO spin off a  sync targets periodically for consistency in case we screw up the eventsx
 	// start watch
-	watchEvents(cli, conf, newHash, startTasks)
+	watchEvents(cli, conf, newHash, ServicesMap)
 }
