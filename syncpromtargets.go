@@ -200,6 +200,8 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 			return
 		case m := <-msgs:
 			if m.Type == events.ContainerEventType {
+				doneGoneChanged := false
+
 				switch (m.Action) {
 				case "health_status":
 					taskId := m.ID
@@ -216,25 +218,15 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 						}
 
 						syncTask(&task, initialServices)
+						doneGoneChanged = true
 
-						prevHash, err = writeTargetsFile(initialServices, prevHash)
-						if err != nil {
-							log.Printf("watchEvents: error writing targets: %s", err)
-						}
 					case "unhealthy":
 
 						if initialServices.Has(svcName) {
 							initialServices.RemoveEndpoint(svcName, taskId)
-
-							var err error
-							prevHash, err = writeTargetsFile(initialServices, prevHash)
-							if err != nil {
-								log.Printf("watchEvents: error writing targets: %s", err)
-							}
+							doneGoneChanged = true
 						}
 					}
-
-
 				case "stop", "kill":
 					svcName, ok := m.Actor.Attributes[svcNameLabel]
 					if !ok {
@@ -243,14 +235,17 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 					taskId := m.ID
 					if initialServices.Has(svcName) {
 						initialServices.RemoveEndpoint(svcName, taskId)
-
-						var err error
-						prevHash, err = writeTargetsFile(initialServices, prevHash)
-						if err != nil {
-							log.Printf("watchEvents: error writing targets: %s", err)
-						}
+						doneGoneChanged = true
 					}
 					// delete specific task from services
+				}
+
+				if doneGoneChanged {
+					var err error
+					prevHash, err = writeTargetsFile(initialServices, prevHash)
+					if err != nil {
+						log.Printf("watchEvents: error writing targets: %s", err)
+					}
 				}
 			}
 		}
