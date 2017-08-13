@@ -154,6 +154,8 @@ func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string
 
 func syncTargetsOnce(cli *client.Client, conf *ConfigContext, serviceAddresses *serviceMap) (string, *serviceMap, error) {
 
+	serviceAddresses.Clear()
+
 	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
 		return "", nil, err
 	}

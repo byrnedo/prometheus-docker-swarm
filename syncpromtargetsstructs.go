@@ -28,6 +28,12 @@ func NewServiceMap() *serviceMap {
 	}
 }
 
+func (this *serviceMap) Clear() {
+	this.Mutex.Lock()
+	defer this.Mutex.Unlock()
+	this.Data = make(map[string][]ServiceEndpoint)
+}
+
 func (this *serviceMap) Set(key string, val []ServiceEndpoint) {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
