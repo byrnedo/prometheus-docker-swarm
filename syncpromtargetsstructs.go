@@ -47,7 +47,6 @@ func (this *serviceMap) RemoveEndpoint(key, taskId string) {
 	for idx, e := range this.Data[key] {
 		if e.TaskID == taskId {
 			this.Data[key] = append(this.Data[key][:idx], this.Data[key][idx + 1:]...)
-			break
 		}
 	}
 }
