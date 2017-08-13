@@ -20,7 +20,7 @@ const targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
 
 // host networking not supported in Docker Swarm, so we have to
 // have specialized support for it
-func syncHostNetworkedContainers(serviceAddresses map[string][]string, cli *client.Client, conf *ConfigContext) error {
+func syncHostNetworkedContainers(serviceAddresses map[string][]ServiceEndpoint, cli *client.Client, conf *ConfigContext) error {
 	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
 	if err != nil {
 		return err
@@ -46,9 +46,12 @@ func syncHostNetworkedContainers(serviceAddresses map[string][]string, cli *clie
 			// for some reason "$ docker run --name foo" yields "/foo"
 			serviceName := container.Names[0][1:]
 
-			hostPort := fmt.Sprintf("%s:%d", conf.HostIp, endpointPort)
+			serviceAddresses[serviceName] = append(serviceAddresses[serviceName], ServiceEndpoint{
+				TaskID: container.ID,
+				Port: endpointPort,
+				Ip: conf.HostIp,
 
-			serviceAddresses[serviceName] = append(serviceAddresses[serviceName], hostPort)
+			})
 		} else {
 			log.Printf("is not host networked container")
 		}
@@ -57,7 +60,7 @@ func syncHostNetworkedContainers(serviceAddresses map[string][]string, cli *clie
 	return nil
 }
 
-func syncSwarmTasks(serviceAddresses map[string][]string, cli *client.Client) error {
+func syncSwarmTasks(serviceAddresses map[string][]ServiceEndpoint, cli *client.Client) error {
 	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
 	if err != nil {
 		return err
@@ -92,19 +95,28 @@ func syncSwarmTasks(serviceAddresses map[string][]string, cli *client.Client) er
 
 			taskServiceName := serviceById[task.ServiceID].Spec.Name
 
-			serviceAddresses[taskServiceName] = append(serviceAddresses[taskServiceName], ip+":"+strconv.Itoa(metricsPort))
+			serviceAddresses[taskServiceName] = append(serviceAddresses[taskServiceName], ServiceEndpoint{
+				TaskID: task.ID,
+				Port: metricsPort,
+				Ip: ip,
+			})
 		}
 	}
 
 	return nil
 }
 
-func writeTargetsFile(serviceAddresses map[string][]string, previousHash string) (string, error) {
+func writeTargetsFile(serviceAddresses map[string][]ServiceEndpoint, previousHash string) (string, error) {
 	promServiceTargetsFileContent := PromServiceTargetsFile{}
 
-	for serviceId, addresses := range serviceAddresses {
+	for serviceId, endpoints := range serviceAddresses {
 		labels := map[string]string{
 			"job": serviceId,
+		}
+
+		var addresses []string
+		for _, endpoint := range endpoints {
+			addresses = append(addresses, endpoint.Ip + ":" + strconv.Itoa(endpoint.Port))
 		}
 
 		serviceTarget := PromServiceTargetsList{addresses, labels}
@@ -132,8 +144,8 @@ func writeTargetsFile(serviceAddresses map[string][]string, previousHash string)
 	return newHash, nil
 }
 
-func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[string][]string, error) {
-	serviceAddresses := make(map[string][]string)
+func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[string][]ServiceEndpoint, error) {
+	serviceAddresses := make(map[string][]ServiceEndpoint)
 
 	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
 		return "", nil, err
@@ -149,7 +161,7 @@ func syncTargetsOnce(cli *client.Client, conf *ConfigContext) (string, map[strin
 }
 
 // TODO take a channel to push updates onto
-func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices map[string][]string) {
+func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices map[string][]ServiceEndpoint) {
 
 	var (
 		done chan bool
@@ -183,7 +195,16 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 					// Push onto services map
 				case "stop":
 				case "kill":
-					//name := m.Actor.Attributes["com.docker.swarm.service.name"]
+					svcName := m.Actor.Attributes["com.docker.swarm.service.name"]
+					taskId := m.ID
+					if _, ok := initialServices[svcName]; ok {
+						for idx, e := range initialServices[svcName] {
+							if e.TaskID == taskId {
+								initialServices[svcName] = append(initialServices[svcName][:idx], initialServices[svcName][idx+1:]...)
+								break
+							}
+						}
+					}
 					// delete specific task from services
 				}
 			}
