@@ -40,6 +40,18 @@ func (this *serviceMap) Set(key string, val []ServiceEndpoint) {
 	this.Data[key] = val
 }
 
+func (this *serviceMap) RemoveEndpoint(key, taskId string) {
+	this.Mutex.Lock()
+	defer this.Mutex.Unlock()
+
+	for idx, e := range this.Data[key] {
+		if e.TaskID == taskId {
+			this.Data[key] = append(this.Data[key][:idx], this.Data[key][idx + 1:]...)
+			break
+		}
+	}
+}
+
 func (this *serviceMap) Append(key string, val ServiceEndpoint) {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()

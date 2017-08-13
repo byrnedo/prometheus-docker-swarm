@@ -16,7 +16,11 @@ import (
 	"github.com/docker/docker/api/types/events"
 )
 
-const targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
+const (
+	targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
+	svcNameLabel = "com.docker.swarm.task.name"
+
+)
 
 
 var (
@@ -37,7 +41,7 @@ func syncHostNetworkedContainers(serviceAddresses *serviceMap, cli *client.Clien
 
 	for _, container := range containerList {
 		// skip over Swarm-managed tasks (they are scraped automatically)
-		if _, isSwarmTask := container.Labels["com.docker.swarm.task.name"]; isSwarmTask {
+		if _, isSwarmTask := container.Labels[svcNameLabel]; isSwarmTask {
 			continue
 		}
 
@@ -68,16 +72,6 @@ func syncHostNetworkedContainers(serviceAddresses *serviceMap, cli *client.Clien
 }
 
 func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
-	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
-	if err != nil {
-		return err
-	}
-
-	serviceById := map[string]swarm.Service{}
-
-	for _, service := range services {
-		serviceById[service.ID] = service
-	}
 
 	// list tasks
 	tasks, err := cli.TaskList(context.Background(), types.TaskListOptions{})
@@ -87,30 +81,41 @@ func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
 
 	for _, task := range tasks {
 		// TODO: this filter could probably be done with the TaskList() call more efficiently?
-		if task.Status.State != swarm.TaskStateRunning {
-			continue
-		}
-
-		hasMetricsEndpoint, metricsPort, _ := parseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
-
-		if !hasMetricsEndpoint {
-			continue
-		}
-
-		if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
-			ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
-
-			taskServiceName := serviceById[task.ServiceID].Spec.Name
-
-			serviceAddresses.Append(taskServiceName, ServiceEndpoint{
-				TaskID: task.ID,
-				Port: metricsPort,
-				Ip: ip,
-			})
-		}
+		syncTask(task, serviceAddresses)
 	}
 
 	return nil
+}
+
+func syncTask(task *swarm.Task, serviceAddresses *serviceMap) {
+	if task.Status.State != swarm.TaskStateRunning {
+		return
+	}
+
+	hasMetricsEndpoint, metricsPort, _ := parseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
+
+	if !hasMetricsEndpoint {
+		return
+	}
+
+
+	svcName , ok := task.Labels[svcNameLabel]
+	if !ok {
+		return
+	}
+
+	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
+		ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
+
+
+
+		serviceAddresses.Append(svcName, ServiceEndpoint{
+			TaskID: task.ID,
+			Port: metricsPort,
+			Ip: ip,
+		})
+	}
+
 }
 
 func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string, error) {
@@ -197,32 +202,55 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 		case m := <-msgs:
 			if m.Type == events.ContainerEventType {
 				switch (m.Action) {
-				case "create", "start":
-					//name := m.Actor.Attributes["com.docker.swarm.service.name"]
-					// Get task
-					// Push onto services map
-					var err error
-					prevHash, err = writeTargetsFile(initialServices, prevHash)
-					if err != nil {
-						log.Printf("watchEvents: error writing targets: %s", err)
-					}
-				case "stop", "kill":
-					svcName := m.Actor.Attributes["com.docker.swarm.service.name"]
+				case "health_status":
 					taskId := m.ID
-					if initialServices.Has(svcName) {
-						endpoints := initialServices.Get(svcName)
-						for idx, e := range endpoints {
-							if e.TaskID == taskId {
-								endpoints = append(endpoints[:idx], endpoints[idx+1:]...)
-								initialServices.Set(svcName, endpoints)
-								break
+					svcName, ok := m.Actor.Attributes[svcNameLabel]
+					if !ok {
+						continue
+					}
+
+					switch m.Status {
+					case "healthy":
+						task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
+						if err != nil {
+							log.Printf("watchEvents: error inspecting task: %s", err)
+						}
+
+						syncTask(task, initialServices)
+
+						var err error
+						prevHash, err = writeTargetsFile(initialServices, prevHash)
+						if err != nil {
+							log.Printf("watchEvents: error writing targets: %s", err)
+						}
+					case "unhealthy":
+
+						if initialServices.Has(svcName) {
+							initialServices.RemoveEndpoint(svcName, taskId)
+
+							var err error
+							prevHash, err = writeTargetsFile(initialServices, prevHash)
+							if err != nil {
+								log.Printf("watchEvents: error writing targets: %s", err)
 							}
 						}
 					}
-					var err error
-					prevHash, err = writeTargetsFile(initialServices, prevHash)
-					if err != nil {
-						log.Printf("watchEvents: error writing targets: %s", err)
+
+
+				case "stop", "kill":
+					svcName, ok := m.Actor.Attributes[svcNameLabel]
+					if !ok {
+						continue
+					}
+					taskId := m.ID
+					if initialServices.Has(svcName) {
+						initialServices.RemoveEndpoint(svcName, taskId)
+
+						var err error
+						prevHash, err = writeTargetsFile(initialServices, prevHash)
+						if err != nil {
+							log.Printf("watchEvents: error writing targets: %s", err)
+						}
 					}
 					// delete specific task from services
 				}
