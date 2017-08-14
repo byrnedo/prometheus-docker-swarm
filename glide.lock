@@ -1,0 +1,69 @@
+hash: 1e2eb405c4b93feb82a1a3eca221d7fc065b168ee21b0fe38a174f2921fe7fab
+updated: 2017-08-14T10:14:59.269151558+02:00
+imports:
+- name: github.com/docker/distribution
+  version: 06fa77aa11a3913096efcb9b5bd25db8ef55a939
+  subpackages:
+  - reference
+  - digestset
+- name: github.com/docker/docker
+  version: 90d35abf7b3535c1c319c872900fbd76374e521c
+  subpackages:
+  - api/types
+  - api/types/events
+  - api/types/swarm
+  - client
+  - api/types/container
+  - api/types/filters
+  - api/types/mount
+  - api/types/network
+  - api/types/registry
+  - api
+  - api/types/image
+  - api/types/time
+  - api/types/versions
+  - api/types/volume
+  - pkg/tlsconfig
+  - api/types/blkiodev
+  - api/types/strslice
+  - pkg/ioutils
+  - pkg/system
+  - pkg/longpath
+- name: github.com/docker/go-connections
+  version: 3ede32e2033de7505e6500d6c868c2b9ed9f169d
+  subpackages:
+  - nat
+  - sockets
+  - tlsconfig
+- name: github.com/docker/go-units
+  version: 0dadbb0345b35ec7ef35e228dabb8de89a65bf52
+- name: github.com/docker/libtrust
+  version: aabc10ec26b754e797f9028f4589c5b7bd90dc20
+- name: github.com/Microsoft/go-winio
+  version: 78439966b38d69bf38227fbf57ac8a6fee70f69a
+- name: github.com/opencontainers/go-digest
+  version: 279bed98673dd5bef374d3b6e4b09e2af76183bf
+- name: github.com/pkg/errors
+  version: c605e284fe17294bda444b34710735b29d1a9d90
+- name: github.com/sirupsen/logrus
+  version: a3f95b5c423586578a4e099b11a46c2479628cac
+- name: github.com/Sirupsen/logrus
+  version: 181d419aa9e2223811b824e8f0b4af96f9ba9302
+- name: github.com/urfave/cli
+  version: cfb38830724cc34fedffe9a2a29fb54fa9169cd1
+- name: golang.org/x/crypto
+  version: b176d7def5d71bdd214203491f89843ed217f420
+  subpackages:
+  - ssh/terminal
+- name: golang.org/x/net
+  version: 1c05540f6879653db88113bc4a2b70aec4bd491f
+  subpackages:
+  - context
+  - context/ctxhttp
+  - proxy
+- name: golang.org/x/sys
+  version: c84c1ab9fd18cdd4c23dd021c10f5f46dea95e46
+  subpackages:
+  - unix
+  - windows
+testImports: []

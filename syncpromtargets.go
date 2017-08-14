@@ -18,7 +18,7 @@ import (
 
 const (
 	targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
-	svcNameLabel = "com.docker.swarm.task.name"
+	svcNameLabel = "com.docker.swarm.service.name"
 	svcTaskIDLabel = "com.docker.swarm.task.id"
 
 )
@@ -217,9 +217,11 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
 					svcName, ok := m.Actor.Attributes[svcNameLabel]
 					if !ok {
+						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
 						continue
 					}
 					if initialServices.Has(svcName) {
+						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
 						initialServices.RemoveEndpoint(svcName, taskId)
 						doneGoneChanged = true
 					}
