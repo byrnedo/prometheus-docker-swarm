@@ -1,13 +1,15 @@
-hash: 1e2eb405c4b93feb82a1a3eca221d7fc065b168ee21b0fe38a174f2921fe7fab
-updated: 2017-08-14T10:14:59.269151558+02:00
+hash: 6ea4a875f40a53f8a4004743e6aefe4e957e395d4e4aaaa4860e8725475bf640
+updated: 2017-08-14T12:21:24.067203306+02:00
 imports:
+- name: github.com/cskr/pubsub
+  version: 308ca2a9d8371528b36017db3c7eb669b34d9736
 - name: github.com/docker/distribution
   version: 06fa77aa11a3913096efcb9b5bd25db8ef55a939
   subpackages:
   - reference
   - digestset
 - name: github.com/docker/docker
-  version: 90d35abf7b3535c1c319c872900fbd76374e521c
+  version: 89658bed64c2a8fe05a978e5b87dbec409d57a0f
   subpackages:
   - api/types
   - api/types/events
@@ -45,10 +47,10 @@ imports:
   version: 279bed98673dd5bef374d3b6e4b09e2af76183bf
 - name: github.com/pkg/errors
   version: c605e284fe17294bda444b34710735b29d1a9d90
-- name: github.com/sirupsen/logrus
-  version: a3f95b5c423586578a4e099b11a46c2479628cac
 - name: github.com/Sirupsen/logrus
   version: 181d419aa9e2223811b824e8f0b4af96f9ba9302
+- name: github.com/sirupsen/logrus
+  version: a3f95b5c423586578a4e099b11a46c2479628cac
 - name: github.com/urfave/cli
   version: cfb38830724cc34fedffe9a2a29fb54fa9169cd1
 - name: golang.org/x/crypto

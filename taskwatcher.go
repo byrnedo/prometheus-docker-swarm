@@ -2,37 +2,26 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/json"
-	"fmt"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
-	"io/ioutil"
 	log "github.com/sirupsen/logrus"
-	"strconv"
 	"sync"
 	"io"
 	"github.com/docker/docker/api/types/events"
+	"github.com/cskr/pubsub"
 )
 
 const (
 	targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
 	svcNameLabel = "com.docker.swarm.service.name"
+	svcIDLabel = "com.docker.swarm.service.id"
 	svcTaskIDLabel = "com.docker.swarm.task.id"
 
 )
 
 
-var (
-	ServicesMap *serviceMap
-)
-
-func init(){
-	ServicesMap = NewServiceMap()
-}
-
-func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
+func syncSwarmTasks(cli *client.Client, q *pubsub.PubSub) error {
 
 
 	ctx := context.Background()
@@ -49,13 +38,13 @@ func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
 			log.WithField("taskID", task.ID).Debugln("ignoring task since not running: ", task.Status.State)
 			continue
 		}
-		syncTask(&task, serviceAddresses, cli, ctx)
+		syncTask(&task, cli, ctx, q)
 	}
 
 	return nil
 }
 
-func syncTask(task *swarm.Task, serviceAddresses *serviceMap, cli *client.Client, ctx context.Context) {
+func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubsub.PubSub) {
 
 	hasMetricsEndpoint, metricsPort, _ := parseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
 	if !hasMetricsEndpoint {
@@ -72,12 +61,14 @@ func syncTask(task *swarm.Task, serviceAddresses *serviceMap, cli *client.Client
 	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
 		ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
 
-		log.WithFields(log.Fields{"serviceName": svcName, "serviceID": task.ServiceID, "taskID": task.ID, "ip": ip, "port": metricsPort}).Infoln("registering endpoint")
-		serviceAddresses.Append(svcName, ServiceEndpoint{
+		q.Pub(ServiceEndpoint{
+			ServiceID: task.ServiceID,
+			ServiceName: svcName,
 			TaskID: task.ID,
 			Port: metricsPort,
 			Ip: ip,
-		})
+		}, channelEndpointCreate)
+
 	} else {
 
 		log.WithFields(log.Fields{"serviceName": svcName, "serviceID": task.ServiceID, "taskID": task.ID}).Debugln("no network attachment")
@@ -85,60 +76,14 @@ func syncTask(task *swarm.Task, serviceAddresses *serviceMap, cli *client.Client
 
 }
 
-func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string, error) {
-	promServiceTargetsFileContent := PromServiceTargetsFile{}
+func syncTargetsOnce(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) (error) {
 
-	svcMapCopy := serviceAddresses.Copy()
-	for serviceId, endpoints := range svcMapCopy.Data {
-		labels := map[string]string{
-			"job": serviceId,
-		}
+	return syncSwarmTasks(cli, q)
 
-		var addresses []string
-		for _, endpoint := range endpoints {
-			addresses = append(addresses, endpoint.Ip + ":" + strconv.Itoa(endpoint.Port))
-		}
-
-		serviceTarget := PromServiceTargetsList{addresses, labels}
-
-		promServiceTargetsFileContent = append(promServiceTargetsFileContent, serviceTarget)
-	}
-
-	promServiceTargetsFileContentJson, err := json.MarshalIndent(promServiceTargetsFileContent, "", "    ")
-	if err != nil {
-		return previousHash, err
-	}
-
-	newHash := fmt.Sprintf("%x", md5.Sum(promServiceTargetsFileContentJson))
-
-	if newHash != previousHash {
-		log.Debugf("writeTargetsFile: changed, writing to %s", targetsConfPath)
-
-		if err := ioutil.WriteFile(targetsConfPath, promServiceTargetsFileContentJson, 0755); err != nil {
-			log.Errorln("writeTargetsFile: error:", err)
-		}
-	} else {
-		log.Debugln("writeTargetsFile: no changes")
-	}
-
-	return newHash, nil
-}
-
-func syncTargetsOnce(cli *client.Client, conf *ConfigContext, serviceAddresses *serviceMap) (string, *serviceMap, error) {
-
-	serviceAddresses.Clear()
-
-	if err := syncSwarmTasks(serviceAddresses, cli); err != nil {
-		return "", nil, err
-	}
-
-	newHash, err := writeTargetsFile(serviceAddresses, "")
-
-	return newHash, serviceAddresses, err
 }
 
 // TODO take a channel to push updates onto
-func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initialServices *serviceMap) {
+func watchEvents(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) {
 
 	var (
 		done chan bool
@@ -164,8 +109,6 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 			return
 		case m := <-msgs:
 			if m.Type == events.ContainerEventType {
-				doneGoneChanged := false
-
 				switch (m.Action) {
 				case  "start":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -184,8 +127,8 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 						continue
 					}
 
-					syncTask(&task, initialServices, cli, ctx)
-					doneGoneChanged = true
+					syncTask(&task, cli, ctx, q)
+					//doneGoneChanged = true
 
 
 				case "health_status":
@@ -203,15 +146,21 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 							continue
 						}
 
-						syncTask(&task, initialServices, cli, ctx)
-						doneGoneChanged = true
+						syncTask(&task, cli, ctx, q)
+						//doneGoneChanged = true
 					default:
-						if initialServices.Has(svcName) {
-							if initialServices.RemoveEndpoint(svcName, taskId) {
-								log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
-								doneGoneChanged = true
-							}
-						}
+						svcId := m.Actor.Attributes[svcIDLabel]
+						q.Pub(ServiceEndpoint{
+							ServiceID: svcId,
+							ServiceName: svcName,
+							TaskID: taskId,
+						}, channelEndpointRemove)
+						//if initialServices.Has(svcName) {
+						//	if initialServices.RemoveEndpoint(svcName, taskId) {
+						//		log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
+						//		doneGoneChanged = true
+						//	}
+						//}
 					}
 				case "stop", "kill":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -220,22 +169,28 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
 						continue
 					}
-					if initialServices.Has(svcName) {
-						if initialServices.RemoveEndpoint(svcName, taskId) {
-							log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
-							doneGoneChanged = true
-						}
-					}
+					svcId := m.Actor.Attributes[svcIDLabel]
+					q.Pub(ServiceEndpoint{
+						ServiceID: svcId,
+						ServiceName: svcName,
+						TaskID: taskId,
+					}, channelEndpointRemove)
+					//if initialServices.Has(svcName) {
+					//	if initialServices.RemoveEndpoint(svcName, taskId) {
+					//		log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
+					//		doneGoneChanged = true
+					//	}
+					//}
 					// delete specific task from services
 				}
 
-				if doneGoneChanged {
-					var err error
-					prevHash, err = writeTargetsFile(initialServices, prevHash)
-					if err != nil {
-						log.Errorln("watchEvents: error writing targets:", err)
-					}
-				}
+				//if doneGoneChanged {
+				//	var err error
+				//	prevHash, err = writeTargetsFile(initialServices, prevHash)
+				//	if err != nil {
+				//		log.Errorln("watchEvents: error writing targets:", err)
+				//	}
+				//}
 			}
 		}
 	}
@@ -243,16 +198,16 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 
 // TODO create a master services channel that will be source of truth and pass to watchEvents
 // Let that channel select do the file write
-func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup) {
+func startTaskWatcher(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
 	defer wg.Done()
 
 	log.Infoln("syncPromTargetsTask: starting")
 
-	newHash, _, err := syncTargetsOnce(cli, conf, ServicesMap)
+	err := syncTargetsOnce(cli, conf, q)
 	if err != nil {
 		log.Errorln("syncPromTargetsTask: error:", err)
 	}
 	// TODO spin off a  sync targets periodically for consistency in case we screw up the eventsx
 	// start watch
-	watchEvents(cli, conf, newHash, ServicesMap)
+	watchEvents(cli, conf, q)
 }

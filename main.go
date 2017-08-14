@@ -8,6 +8,15 @@ import (
 	"os"
 	"errors"
 	"strings"
+	"github.com/cskr/pubsub"
+)
+
+const (
+	channelEndpointCreate = "endpoint.create"
+	channelEndpointCreated = "endpoint.created"
+	channelEndpointRemove = "endpoint.remove"
+	channelEndpointRemoved = "endpoint.removed"
+	channelCatalogChange = "catalog.change"
 )
 
 // requires that this will be ran on a manager node
@@ -16,6 +25,7 @@ func main() {
 	var (
 		dockerHost string
 		logLevel string
+		evtSubs uint
 	)
 	app := cli.NewApp()
 	app.Name = "prometheus-docker-swarm"
@@ -36,6 +46,12 @@ func main() {
 			Value:       "info",
 			Usage:       "log level",
 			Destination: &logLevel,
+		},
+		cli.UintFlag{
+			Name:        "subscribers",
+			Value:       20,
+			Usage:       "max number of subscribers to events",
+			Destination: &evtSubs,
 		},
 	}
 
@@ -76,9 +92,21 @@ func main() {
 
 		wg := &sync.WaitGroup{}
 
+
+		// + 1 since we sub to it
+		q := pubsub.New(int(evtSubs + 1))
+
 		wg.Add(1)
 
-		go syncPromTargetsTask(client, conf, wg)
+		go startCatalog(client, conf, wg, q)
+
+		wg.Add(1)
+
+		go startPromExporter(client, conf, wg, q)
+
+		wg.Add(1)
+
+		go startTaskWatcher(client, conf, wg, q)
 
 		wg.Wait()
 

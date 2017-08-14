@@ -3,6 +3,8 @@ package main
 import "sync"
 
 type ServiceEndpoint struct {
+	ServiceID string
+	ServiceName string
 	TaskID string
 	Ip string
 	Port int
@@ -10,6 +12,7 @@ type ServiceEndpoint struct {
 
 func (this *ServiceEndpoint) Copy() ServiceEndpoint {
 	return ServiceEndpoint{
+		ServiceName: this.ServiceName,
 		TaskID: this.TaskID,
 		Ip: this.Ip,
 		Port: this.Port,
