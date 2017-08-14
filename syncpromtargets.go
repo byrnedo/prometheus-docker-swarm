@@ -9,7 +9,7 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 	"io/ioutil"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"strconv"
 	"sync"
 	"io"
@@ -19,6 +19,7 @@ import (
 const (
 	targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
 	svcNameLabel = "com.docker.swarm.task.name"
+	svcTaskIDLabel = "com.docker.swarm.task.id"
 
 )
 
@@ -31,88 +32,55 @@ func init(){
 	ServicesMap = NewServiceMap()
 }
 
-// host networking not supported in Docker Swarm, so we have to
-// have specialized support for it
-func syncHostNetworkedContainers(serviceAddresses *serviceMap, cli *client.Client, conf *ConfigContext) error {
-	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
-	if err != nil {
-		return err
-	}
-
-	for _, container := range containerList {
-		// skip over Swarm-managed tasks (they are scraped automatically)
-		if _, isSwarmTask := container.Labels[svcNameLabel]; isSwarmTask {
-			continue
-		}
-
-		// using labels because ENVs are not visible in ContainerList()
-		metricsEndpointSpec, hasMetricsEndpoint := container.Labels["METRICS_ENDPOINT"]
-
-		if !hasMetricsEndpoint {
-			continue
-		}
-
-		endpointPort := parseMetricsEndpointSpec(metricsEndpointSpec)
-
-		_, isHost := container.NetworkSettings.Networks["host"]
-		if isHost && len(container.Names) > 0 && len(container.Names[0]) > 1 {
-			// for some reason "$ docker run --name foo" yields "/foo"
-			serviceName := container.Names[0][1:]
-			serviceAddresses.Append(serviceName, ServiceEndpoint{
-				TaskID: container.ID,
-				Port: endpointPort,
-				Ip: conf.HostIp,
-			})
-		} else {
-			log.Printf("is not host networked container")
-		}
-	}
-
-	return nil
-}
-
 func syncSwarmTasks(serviceAddresses *serviceMap, cli *client.Client) error {
 
+
+	ctx := context.Background()
 	// list tasks
-	tasks, err := cli.TaskList(context.Background(), types.TaskListOptions{})
+	tasks, err := cli.TaskList(ctx, types.TaskListOptions{})
 	if err != nil {
 		return err
 	}
 
 	for _, task := range tasks {
 		// TODO: this filter could probably be done with the TaskList() call more efficiently?
-		syncTask(&task, serviceAddresses)
+
+		if task.Status.State != swarm.TaskStateRunning {
+			log.WithField("taskID", task.ID).Debugln("ignoring task since not running: ", task.Status.State)
+			continue
+		}
+		syncTask(&task, serviceAddresses, cli, ctx)
 	}
 
 	return nil
 }
 
-func syncTask(task *swarm.Task, serviceAddresses *serviceMap) {
-	if task.Status.State != swarm.TaskStateRunning {
-		return
-	}
+func syncTask(task *swarm.Task, serviceAddresses *serviceMap, cli *client.Client, ctx context.Context) {
 
 	hasMetricsEndpoint, metricsPort, _ := parseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
-
 	if !hasMetricsEndpoint {
+		log.WithFields(log.Fields{"serviceID": task.ServiceID, "taskID": task.ID}).Debugln("task has no metrics endpoint")
 		return
 	}
 
-
-	svcName , ok := task.Labels[svcNameLabel]
-	if !ok {
-		return
+	svc, _, err := cli.ServiceInspectWithRaw(ctx, task.ServiceID, types.ServiceInspectOptions{})
+	if err != nil {
+		log.WithFields(log.Fields{"serviceID": task.ServiceID, "taskID": task.ID}).Errorln("failed to inspect service:", err)
 	}
+	svcName := svc.Spec.Name
 
 	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
 		ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
 
-
+		log.WithFields(log.Fields{"serviceName": svcName, "serviceID": task.ServiceID, "taskID": task.ID, "ip": ip, "port": metricsPort}).Infoln("registering endpoint")
 		serviceAddresses.Append(svcName, ServiceEndpoint{
 			TaskID: task.ID,
 			Port: metricsPort,
 			Ip: ip,
 		})
+	} else {
+
+		log.WithFields(log.Fields{"serviceName": svcName, "serviceID": task.ServiceID, "taskID": task.ID}).Debugln("no network attachment")
 	}
 
 }
@@ -144,13 +112,13 @@ func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string
 	newHash := fmt.Sprintf("%x", md5.Sum(promServiceTargetsFileContentJson))
 
 	if newHash != previousHash {
-		log.Printf("writeTargetsFile: changed, writing to %s", targetsConfPath)
+		log.Debugf("writeTargetsFile: changed, writing to %s", targetsConfPath)
 
 		if err := ioutil.WriteFile(targetsConfPath, promServiceTargetsFileContentJson, 0755); err != nil {
-			log.Printf("writeTargetsFile: error:", err)
+			log.Errorln("writeTargetsFile: error:", err)
 		}
 	} else {
-		log.Printf("writeTargetsFile: no changes")
+		log.Debugln("writeTargetsFile: no changes")
 	}
 
 	return newHash, nil
@@ -159,10 +127,6 @@ func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string
 func syncTargetsOnce(cli *client.Client, conf *ConfigContext, serviceAddresses *serviceMap) (string, *serviceMap, error) {
 
 	serviceAddresses.Clear()
-
-	if err := syncHostNetworkedContainers(serviceAddresses, cli, conf); err != nil {
-		return "", nil, err
-	}
 
 	if err := syncSwarmTasks(serviceAddresses, cli); err != nil {
 		return "", nil, err
@@ -188,7 +152,7 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 				if e == io.EOF {
 					done <- true
 				} else {
-					log.Printf("watchEvents: error: %s", e)
+					log.Errorln("watchEvents: error:", e)
 				}
 			}
 		}
@@ -203,8 +167,29 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 				doneGoneChanged := false
 
 				switch (m.Action) {
+				case  "start":
+					taskId := m.Actor.Attributes[svcTaskIDLabel]
+					_, ok := m.Actor.Attributes[svcNameLabel]
+					if !ok {
+						continue
+					}
+
+					task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
+					if err != nil {
+						log.Errorln("watchEvents: error inspecting task:", err)
+						continue
+					}
+
+					if task.Spec.ContainerSpec.Healthcheck != nil {
+						continue
+					}
+
+					syncTask(&task, initialServices, cli, ctx)
+					doneGoneChanged = true
+
+
 				case "health_status":
-					taskId := m.ID
+					taskId := m.Actor.Attributes[svcTaskIDLabel]
 					svcName, ok := m.Actor.Attributes[svcNameLabel]
 					if !ok {
 						continue
@@ -214,10 +199,11 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 					case "healthy":
 						task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
 						if err != nil {
-							log.Printf("watchEvents: error inspecting task: %s", err)
+							log.Errorln("watchEvents: error inspecting task:", err)
+							continue
 						}
 
-						syncTask(&task, initialServices)
+						syncTask(&task, initialServices, cli, ctx)
 						doneGoneChanged = true
 
 					case "unhealthy":
@@ -228,11 +214,11 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 						}
 					}
 				case "stop", "kill":
+					taskId := m.Actor.Attributes[svcTaskIDLabel]
 					svcName, ok := m.Actor.Attributes[svcNameLabel]
 					if !ok {
 						continue
 					}
-					taskId := m.ID
 					if initialServices.Has(svcName) {
 						initialServices.RemoveEndpoint(svcName, taskId)
 						doneGoneChanged = true
@@ -244,7 +230,7 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 					var err error
 					prevHash, err = writeTargetsFile(initialServices, prevHash)
 					if err != nil {
-						log.Printf("watchEvents: error writing targets: %s", err)
+						log.Errorln("watchEvents: error writing targets:", err)
 					}
 				}
 			}
@@ -257,11 +243,11 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 func syncPromTargetsTask(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	log.Printf("syncPromTargetsTask: starting")
+	log.Infoln("syncPromTargetsTask: starting")
 
 	newHash, _, err := syncTargetsOnce(cli, conf, ServicesMap)
 	if err != nil {
-		log.Printf("syncPromTargetsTask: error:", err)
+		log.Errorln("syncPromTargetsTask: error:", err)
 	}
 	// TODO spin off a  sync targets periodically for consistency in case we screw up the eventsx
 	// start watch

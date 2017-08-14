@@ -2,12 +2,13 @@ package main
 
 import (
 	"github.com/docker/docker/client"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"sync"
 )
 
 // requires that this will be ran on a manager node
 func main() {
+	log.SetLevel(log.DebugLevel)
 	// connection errors are not actually handled here, but instead when we call our first method.
 	cli, err := client.NewClient("unix:///var/run/docker.sock", "", nil, nil)
 	if err != nil {
@@ -19,7 +20,7 @@ func main() {
 		panic(err)
 	}
 
-	log.Printf("main: resolved host IP to %s", hostIp)
+	log.Infof("main: resolved host IP to %s", hostIp)
 
 	conf := &ConfigContext{hostIp}
 
