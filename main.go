@@ -7,6 +7,7 @@ import (
 	"sync"
 	"os"
 	"errors"
+	"strings"
 )
 
 // requires that this will be ran on a manager node
@@ -32,7 +33,7 @@ func main() {
 
 		cli.StringFlag{
 			Name:        "log-level",
-			Value:       "warn",
+			Value:       "info",
 			Usage:       "log level",
 			Destination: &logLevel,
 		},
@@ -41,7 +42,7 @@ func main() {
 	app.Action = func(c *cli.Context) error {
 
 		lvl := log.InfoLevel
-		switch logLevel {
+		switch strings.ToLower(logLevel) {
 		case "debug":
 			lvl = log.DebugLevel
 
