@@ -1,49 +1,35 @@
-package main
+package catalog
 
-import "sync"
+import (
+	"sync"
+	"github.com/byrnedo/prometheus-docker-swarm/dockerwatcher"
+)
 
-type ServiceEndpoint struct {
-	ServiceID string
-	ServiceName string
-	TaskID string
-	Ip string
-	Port int
-}
-
-func (this *ServiceEndpoint) Copy() ServiceEndpoint {
-	return ServiceEndpoint{
-		ServiceName: this.ServiceName,
-		TaskID: this.TaskID,
-		Ip: this.Ip,
-		Port: this.Port,
-	}
-}
-
-type serviceMap struct {
+type ServiceMap struct {
 	Mutex *sync.RWMutex
-	Data map[string][]ServiceEndpoint
+	Data map[string][]dockerwatcher.ServiceEndpoint
 }
 
-func NewServiceMap() *serviceMap {
-	return &serviceMap{
+func NewServiceMap() *ServiceMap {
+	return &ServiceMap{
 		Mutex: &sync.RWMutex{},
-		Data: make(map[string][]ServiceEndpoint),
+		Data: make(map[string][]dockerwatcher.ServiceEndpoint),
 	}
 }
 
-func (this *serviceMap) Clear() {
+func (this *ServiceMap) Clear() {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
-	this.Data = make(map[string][]ServiceEndpoint)
+	this.Data = make(map[string][]dockerwatcher.ServiceEndpoint)
 }
 
-func (this *serviceMap) Set(key string, val []ServiceEndpoint) {
+func (this *ServiceMap) Set(key string, val []dockerwatcher.ServiceEndpoint) {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
 	this.Data[key] = val
 }
 
-func (this *serviceMap) RemoveEndpoint(key, taskId string) bool {
+func (this *ServiceMap) RemoveEndpoint(key, taskId string) bool {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
 
@@ -57,36 +43,36 @@ func (this *serviceMap) RemoveEndpoint(key, taskId string) bool {
 	return found
 }
 
-func (this *serviceMap) Append(key string, val ServiceEndpoint) {
+func (this *ServiceMap) Append(key string, val dockerwatcher.ServiceEndpoint) {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
 	this.Data[key] = append(this.Data[key], val)
 }
 
-func (this *serviceMap) Has(key string) bool {
+func (this *ServiceMap) Has(key string) bool {
 	this.Mutex.RLock()
 	defer this.Mutex.RUnlock()
 	_, has := this.Data[key]
 	return has
 }
 
-func (this *serviceMap) Get(key string) []ServiceEndpoint {
+func (this *ServiceMap) Get(key string) []dockerwatcher.ServiceEndpoint {
 	this.Mutex.RLock()
 	defer this.Mutex.RUnlock()
 	data := this.Data[key]
-	var retD []ServiceEndpoint
+	var retD []dockerwatcher.ServiceEndpoint
 	for _, e := range data {
 		retD = append(retD, e.Copy())
 	}
 	return retD
 }
 
-func (this *serviceMap) Copy() *serviceMap {
+func (this *ServiceMap) Copy() *ServiceMap {
 	this.Mutex.RLock()
 	defer this.Mutex.RUnlock()
 	retD := NewServiceMap()
 	for k, e := range this.Data {
-		var endpointsC []ServiceEndpoint
+		var endpointsC []dockerwatcher.ServiceEndpoint
 		for _, endpoint := range e {
 			endpointsC = append(endpointsC, endpoint.Copy())
 		}
@@ -94,3 +80,4 @@ func (this *serviceMap) Copy() *serviceMap {
 	}
 	return retD
 }
+

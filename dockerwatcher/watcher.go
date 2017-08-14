@@ -1,4 +1,4 @@
-package main
+package dockerwatcher
 
 import (
 	"context"
@@ -10,10 +10,11 @@ import (
 	"io"
 	"github.com/docker/docker/api/types/events"
 	"github.com/cskr/pubsub"
+	"github.com/byrnedo/prometheus-docker-swarm/utils"
+	"github.com/byrnedo/prometheus-docker-swarm/channels"
 )
 
 const (
-	targetsConfPath = "/etc/prometheus/targets-from-swarm.json"
 	svcNameLabel = "com.docker.swarm.service.name"
 	svcIDLabel = "com.docker.swarm.service.id"
 	svcTaskIDLabel = "com.docker.swarm.task.id"
@@ -46,7 +47,7 @@ func syncSwarmTasks(cli *client.Client, q *pubsub.PubSub) error {
 
 func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubsub.PubSub) {
 
-	hasMetricsEndpoint, metricsPort, _ := parseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
+	hasMetricsEndpoint, metricsPort, _ := utils.ParseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
 	if !hasMetricsEndpoint {
 		log.WithFields(log.Fields{"serviceID": task.ServiceID, "taskID": task.ID}).Debugln("task has no metrics endpoint")
 		return
@@ -59,7 +60,7 @@ func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubs
 	svcName := svc.Spec.Name
 
 	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
-		ip := extractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
+		ip := utils.ExtractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
 
 		q.Pub(ServiceEndpoint{
 			ServiceID: task.ServiceID,
@@ -67,7 +68,7 @@ func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubs
 			TaskID: task.ID,
 			Port: metricsPort,
 			Ip: ip,
-		}, channelEndpointCreate)
+		}, channels.ChannelEndpointCreate)
 
 	} else {
 
@@ -76,14 +77,13 @@ func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubs
 
 }
 
-func syncTargetsOnce(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) (error) {
+func syncTargetsOnce(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub) (error) {
 
 	return syncSwarmTasks(cli, q)
 
 }
 
-// TODO take a channel to push updates onto
-func watchEvents(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) {
+func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub) {
 
 	var (
 		done chan bool
@@ -128,8 +128,6 @@ func watchEvents(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) {
 					}
 
 					syncTask(&task, cli, ctx, q)
-					//doneGoneChanged = true
-
 
 				case "health_status":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -145,22 +143,14 @@ func watchEvents(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) {
 							log.Errorln("watchEvents: error inspecting task:", err)
 							continue
 						}
-
 						syncTask(&task, cli, ctx, q)
-						//doneGoneChanged = true
 					default:
 						svcId := m.Actor.Attributes[svcIDLabel]
 						q.Pub(ServiceEndpoint{
 							ServiceID: svcId,
 							ServiceName: svcName,
 							TaskID: taskId,
-						}, channelEndpointRemove)
-						//if initialServices.Has(svcName) {
-						//	if initialServices.RemoveEndpoint(svcName, taskId) {
-						//		log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
-						//		doneGoneChanged = true
-						//	}
-						//}
+						}, channels.ChannelEndpointRemove)
 					}
 				case "stop", "kill":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -174,31 +164,14 @@ func watchEvents(cli *client.Client, conf *ConfigContext, q *pubsub.PubSub) {
 						ServiceID: svcId,
 						ServiceName: svcName,
 						TaskID: taskId,
-					}, channelEndpointRemove)
-					//if initialServices.Has(svcName) {
-					//	if initialServices.RemoveEndpoint(svcName, taskId) {
-					//		log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
-					//		doneGoneChanged = true
-					//	}
-					//}
-					// delete specific task from services
+					}, channels.ChannelEndpointRemove)
 				}
-
-				//if doneGoneChanged {
-				//	var err error
-				//	prevHash, err = writeTargetsFile(initialServices, prevHash)
-				//	if err != nil {
-				//		log.Errorln("watchEvents: error writing targets:", err)
-				//	}
-				//}
 			}
 		}
 	}
 }
 
-// TODO create a master services channel that will be source of truth and pass to watchEvents
-// Let that channel select do the file write
-func startTaskWatcher(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
+func StartWatcher(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
 	defer wg.Done()
 
 	log.Infoln("syncPromTargetsTask: starting")

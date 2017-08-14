@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 type ConfigContext struct {
 	HostIp string
+	TargetsConfPath string
 }
 
 /*
@@ -22,19 +23,12 @@ type ConfigContext struct {
 		}
 	}
 */
-type PromServiceTargetsList struct {
-	Targets []string          `json:"targets"`
-	Labels  map[string]string `json:"labels"`
-}
-
-type PromServiceTargetsFile []PromServiceTargetsList
-
 var (
 	portRe  = regexp.MustCompile(":[0-9]+")
 	ipRegex = regexp.MustCompile("^[0-9\\.]+")
 )
 
-func parseMetricsEndpointSpec(env string) int {
+func ParseMetricsEndpointSpec(env string) int {
 	port_ := portRe.FindString(env)
 	if port_ == "" {
 		port_ = ":80"
@@ -50,7 +44,7 @@ func parseMetricsEndpointSpec(env string) int {
 
 // TODO: parsing support is sucky
 // TODO: does not yet support parsing the actual path
-func parseMetricsEndpointEnv(envs []string) (bool, int, string) {
+func ParseMetricsEndpointEnv(envs []string) (bool, int, string) {
 	for _, env := range envs {
 		match, err := regexp.MatchString("^METRICS_ENDPOINT=.+", env)
 		if err != nil {
@@ -58,7 +52,7 @@ func parseMetricsEndpointEnv(envs []string) (bool, int, string) {
 		}
 
 		if match {
-			port := parseMetricsEndpointSpec(env)
+			port := ParseMetricsEndpointSpec(env)
 			return true, port, "/metrics"
 		}
 	}
@@ -67,11 +61,11 @@ func parseMetricsEndpointEnv(envs []string) (bool, int, string) {
 }
 
 // for some reason the ips contain a netmask like this "10.0.0.7/24"
-func extractIpFromNetmask(mangledIp string) string {
+func ExtractIpFromNetmask(mangledIp string) string {
 	return ipRegex.FindString(mangledIp)
 }
 
-func resolveSelfSwarmIp(cli *client.Client) (string, error) {
+func ResolveSelfSwarmIp(cli *client.Client) (string, error) {
 	ctx := context.Background()
 	info, errInfo := cli.Info(ctx)
 	if errInfo != nil {

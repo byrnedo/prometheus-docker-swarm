@@ -9,21 +9,19 @@ import (
 	"errors"
 	"strings"
 	"github.com/cskr/pubsub"
+	"github.com/byrnedo/prometheus-docker-swarm/dockerwatcher"
+	"github.com/byrnedo/prometheus-docker-swarm/utils"
+	"github.com/byrnedo/prometheus-docker-swarm/promexport"
+	"github.com/byrnedo/prometheus-docker-swarm/catalog"
 )
 
-const (
-	channelEndpointCreate = "endpoint.create"
-	channelEndpointCreated = "endpoint.created"
-	channelEndpointRemove = "endpoint.remove"
-	channelEndpointRemoved = "endpoint.removed"
-	channelCatalogChange = "catalog.change"
-)
 
 // requires that this will be ran on a manager node
 func main() {
 
 	var (
 		dockerHost string
+		promTargetsPath string
 		logLevel string
 		evtSubs uint
 	)
@@ -39,6 +37,13 @@ func main() {
 			Value:       "unix:///var/run/docker.sock",
 			Usage:       "docker host string to connect with",
 			Destination: &dockerHost,
+		},
+
+		cli.StringFlag{
+			Name:        "targets-conf-path",
+			Value: 	     "/etc/prometheus/targets-from-swarm.json",
+			Usage:       "path to prometheus targets file",
+			Destination: &promTargetsPath,
 		},
 
 		cli.StringFlag{
@@ -68,7 +73,7 @@ func main() {
 			lvl = log.WarnLevel
 		case "error":
 			lvl = log.ErrorLevel
-		case "fatal":
+		case "fat		dockerHost stringal":
 			lvl = log.FatalLevel
 		default:
 			return errors.New("invalid log level")
@@ -81,14 +86,17 @@ func main() {
 			panic(err)
 		}
 
-		hostIp, err := resolveSelfSwarmIp(client)
+		hostIp, err := utils.ResolveSelfSwarmIp(client)
 		if err != nil {
 			panic(err)
 		}
 
 		log.Infof("main: resolved host IP to %s", hostIp)
 
-		conf := &ConfigContext{hostIp}
+		conf := &utils.ConfigContext{
+			HostIp: hostIp,
+			TargetsConfPath: promTargetsPath,
+		}
 
 		wg := &sync.WaitGroup{}
 
@@ -98,15 +106,15 @@ func main() {
 
 		wg.Add(1)
 
-		go startCatalog(client, conf, wg, q)
+		go catalog.StartCatalog(client, conf, wg, q)
 
 		wg.Add(1)
 
-		go startPromExporter(client, conf, wg, q)
+		go promexport.StartPromExporter(client, conf, wg, q)
 
 		wg.Add(1)
 
-		go startTaskWatcher(client, conf, wg, q)
+		go dockerwatcher.StartWatcher(client, conf, wg, q)
 
 		wg.Wait()
 

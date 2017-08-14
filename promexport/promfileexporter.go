@@ -1,4 +1,4 @@
-package main
+package promexport
 
 import (
 	"sync"
@@ -10,20 +10,30 @@ import (
 	"fmt"
 	"crypto/md5"
 	"io/ioutil"
+	"github.com/byrnedo/prometheus-docker-swarm/utils"
+	"github.com/byrnedo/prometheus-docker-swarm/channels"
+	"github.com/byrnedo/prometheus-docker-swarm/catalog"
 )
 
+type PromServiceTargetsList struct {
+	Targets []string          `json:"targets"`
+	Labels  map[string]string `json:"labels"`
+}
 
-func startPromExporter(cli *client.Client, conf *ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
-	ch := q.Sub(channelCatalogChange)
+type PromServiceTargetsFile []PromServiceTargetsList
+
+
+func StartPromExporter(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
+	ch := q.Sub(channels.ChannelCatalogChange)
 	prevHash := ""
 	for {
 		select {
 		case evt := <-ch:
 			switch evt {
-			case evt.(*serviceMap):
-				catalog := evt.(*serviceMap)
+			case evt.(*catalog.ServiceMap):
+				clg := evt.(*catalog.ServiceMap)
 
-				if newHash, err := writeTargetsFile(catalog, prevHash); err != nil {
+				if newHash, err := writeTargetsFile(clg, conf, prevHash); err != nil {
 					log.Errorln("writeTargetsFile:", err)
 				}else {
 					prevHash = newHash
@@ -35,7 +45,7 @@ func startPromExporter(cli *client.Client, conf *ConfigContext, wg *sync.WaitGro
 	wg.Done()
 }
 
-func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string, error) {
+func writeTargetsFile(serviceAddresses *catalog.ServiceMap, conf *utils.ConfigContext, previousHash string) (string, error) {
 	promServiceTargetsFileContent := PromServiceTargetsFile{}
 
 	svcMapCopy := serviceAddresses.Copy()
@@ -62,9 +72,9 @@ func writeTargetsFile(serviceAddresses *serviceMap, previousHash string) (string
 	newHash := fmt.Sprintf("%x", md5.Sum(promServiceTargetsFileContentJson))
 
 	if newHash != previousHash {
-		log.Debugf("writeTargetsFile: changed, writing to %s", targetsConfPath)
+		log.Debugf("writeTargetsFile: changed, writing to %s", conf.TargetsConfPath)
 
-		if err := ioutil.WriteFile(targetsConfPath, promServiceTargetsFileContentJson, 0755); err != nil {
+		if err := ioutil.WriteFile(conf.TargetsConfPath, promServiceTargetsFileContentJson, 0755); err != nil {
 			log.Errorln("writeTargetsFile: error:", err)
 		}
 	} else {
