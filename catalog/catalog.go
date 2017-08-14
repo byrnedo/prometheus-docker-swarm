@@ -76,7 +76,7 @@ func handleClobber(newData map[string][]utils.ServiceEndpoint, q *pubsub.PubSub)
 	}
 
 	if changed {
-		q.Pub(servicesMap, channels.ChannelCatalogChange)
+		q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
 	}
 
 }
@@ -88,12 +88,12 @@ func handleCreateRemove(sE utils.ServiceEndpoint, q *pubsub.PubSub){
 		servicesMap.Append(sE.ServiceName, sE)
 		log.WithFields(log.Fields{"serviceName": sE.ServiceName, "serviceID": sE.ServiceID, "taskID": sE.TaskID, "ip": sE.Ip, "port": sE.Port}).Infoln("registering endpoint")
 
-		q.Pub(servicesMap, channels.ChannelCatalogChange)
+		q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
 	} else {
 		// remove
 		if servicesMap.RemoveEndpoint(sE.ServiceName, sE.TaskID) {
 			log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Infoln("deregistering endpoint")
-			q.Pub(servicesMap, channels.ChannelCatalogChange)
+			q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
 		} else {
 			log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Debugln("no need to deregistering endpoint, not registered")
 		}
