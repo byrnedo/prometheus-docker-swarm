@@ -13,6 +13,7 @@ import (
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
 	"github.com/byrnedo/prometheus-docker-swarm/promexport"
 	"github.com/byrnedo/prometheus-docker-swarm/catalog"
+	"time"
 )
 
 
@@ -23,6 +24,7 @@ func main() {
 		dockerHost string
 		promTargetsPath string
 		logLevel string
+		hardResyncInterval time.Duration
 		evtSubs uint
 	)
 	app := cli.NewApp()
@@ -38,7 +40,12 @@ func main() {
 			Usage:       "docker host string to connect with",
 			Destination: &dockerHost,
 		},
-
+		cli.DurationFlag{
+			Name:        "resync-period",
+			Value: 	     30 * time.Second,
+			Usage:       "interval on which to hard resync the service catalog",
+			Destination: &hardResyncInterval,
+		},
 		cli.StringFlag{
 			Name:        "targets-conf-path",
 			Value: 	     "/etc/prometheus/targets-from-swarm.json",
@@ -54,7 +61,7 @@ func main() {
 		},
 		cli.UintFlag{
 			Name:        "subscribers",
-			Value:       20,
+			Value:       200,
 			Usage:       "max number of subscribers to events",
 			Destination: &evtSubs,
 		},
@@ -66,14 +73,13 @@ func main() {
 		switch strings.ToLower(logLevel) {
 		case "debug":
 			lvl = log.DebugLevel
-
 		case "info":
 			lvl = log.InfoLevel
 		case "warn":
 			lvl = log.WarnLevel
 		case "error":
 			lvl = log.ErrorLevel
-		case "fat		dockerHost stringal":
+		case "fatal":
 			lvl = log.FatalLevel
 		default:
 			return errors.New("invalid log level")
@@ -96,13 +102,19 @@ func main() {
 		conf := &utils.ConfigContext{
 			HostIp: hostIp,
 			TargetsConfPath: promTargetsPath,
+			ResyncInterval: hardResyncInterval,
 		}
 
 		wg := &sync.WaitGroup{}
 
 
 		// + 1 since we sub to it
-		q := pubsub.New(int(evtSubs + 1))
+
+		q := pubsub.New(100)
+
+		wg.Add(1)
+
+		go dockerwatcher.StartWatcher(client, conf, wg, q)
 
 		wg.Add(1)
 
@@ -112,9 +124,6 @@ func main() {
 
 		go promexport.StartPromExporter(client, conf, wg, q)
 
-		wg.Add(1)
-
-		go dockerwatcher.StartWatcher(client, conf, wg, q)
 
 		wg.Wait()
 

@@ -6,11 +6,13 @@ import (
 	"net"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 type ConfigContext struct {
 	HostIp string
 	TargetsConfPath string
+	ResyncInterval time.Duration
 }
 
 /*
@@ -87,3 +89,4 @@ func ResolveSelfSwarmIp(cli *client.Client) (string, error) {
 
 	return ip, nil
 }
+

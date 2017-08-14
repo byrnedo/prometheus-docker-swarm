@@ -5,5 +5,6 @@ const (
 	ChannelEndpointCreated = "endpoint.created"
 	ChannelEndpointRemove = "endpoint.remove"
 	ChannelEndpointRemoved = "endpoint.removed"
-	ChannelCatalogChange = "catalog.change"
+	ChannelCatalogClobber = "catalog.clobber"
+	ChannelCatalogChange = "catalog.changed"
 )

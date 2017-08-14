@@ -12,7 +12,6 @@ import (
 	"io/ioutil"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
 	"github.com/byrnedo/prometheus-docker-swarm/channels"
-	"github.com/byrnedo/prometheus-docker-swarm/catalog"
 )
 
 type PromServiceTargetsList struct {
@@ -30,8 +29,8 @@ func StartPromExporter(cli *client.Client, conf *utils.ConfigContext, wg *sync.W
 		select {
 		case evt := <-ch:
 			switch evt {
-			case evt.(*catalog.ServiceMap):
-				clg := evt.(*catalog.ServiceMap)
+			case evt.(*utils.ServiceMap):
+				clg := evt.(*utils.ServiceMap)
 
 				if newHash, err := writeTargetsFile(clg, conf, prevHash); err != nil {
 					log.Errorln("writeTargetsFile:", err)
@@ -42,10 +41,11 @@ func StartPromExporter(cli *client.Client, conf *utils.ConfigContext, wg *sync.W
 			}
 		}
 	}
+	log.Info("promexport: exitting")
 	wg.Done()
 }
 
-func writeTargetsFile(serviceAddresses *catalog.ServiceMap, conf *utils.ConfigContext, previousHash string) (string, error) {
+func writeTargetsFile(serviceAddresses *utils.ServiceMap, conf *utils.ConfigContext, previousHash string) (string, error) {
 	promServiceTargetsFileContent := PromServiceTargetsFile{}
 
 	svcMapCopy := serviceAddresses.Copy()
