@@ -26,15 +26,8 @@ func main() {
 	wg := &sync.WaitGroup{}
 
 	wg.Add(1)
-	go collectHostStatsTask(wg)
 
-	wg.Add(1)
-	// TODO - do this one
 	go syncPromTargetsTask(cli, conf, wg)
-
-
-	wg.Add(1)
-	go containerMetricsTask(cli, wg)
 
 	wg.Wait()
 }
