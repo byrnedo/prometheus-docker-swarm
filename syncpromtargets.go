@@ -205,12 +205,12 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 
 						syncTask(&task, initialServices, cli, ctx)
 						doneGoneChanged = true
-
-					case "unhealthy":
-
+					default:
 						if initialServices.Has(svcName) {
-							initialServices.RemoveEndpoint(svcName, taskId)
-							doneGoneChanged = true
+							if initialServices.RemoveEndpoint(svcName, taskId) {
+								log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
+								doneGoneChanged = true
+							}
 						}
 					}
 				case "stop", "kill":
@@ -221,9 +221,10 @@ func watchEvents(cli *client.Client, conf *ConfigContext, prevHash string, initi
 						continue
 					}
 					if initialServices.Has(svcName) {
-						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
-						initialServices.RemoveEndpoint(svcName, taskId)
-						doneGoneChanged = true
+						if initialServices.RemoveEndpoint(svcName, taskId) {
+							log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Infoln("deregistering endpoint")
+							doneGoneChanged = true
+						}
 					}
 					// delete specific task from services
 				}
