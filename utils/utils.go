@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+	"math"
 )
 
 type ConfigContext struct {

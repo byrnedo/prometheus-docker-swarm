@@ -8,15 +8,17 @@ import (
 	log "github.com/sirupsen/logrus"
 	"sync"
 	"io"
-	"github.com/docker/docker/api/types/events"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
 	"time"
+	"encoding/json"
 )
 
 const (
 	svcNameLabel = "com.docker.swarm.service.name"
 	svcIDLabel = "com.docker.swarm.service.id"
 	svcTaskIDLabel = "com.docker.swarm.task.id"
+	svcUpdateReplicasNewAttr = "replicas.new"
+	svcUpdateReplicasOldAttr = "replicas.old"
 
 	ActionClobber = "clobber"
 	ActionCreate = "create"
@@ -176,72 +178,95 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, evtChan chan <- 
 				log.Errorln("watchEvents: error:", e)
 			}
 		case m := <-msgs:
-			if m.Type == events.ContainerEventType {
-				switch (m.Action) {
-				case  "start":
-					taskId := m.Actor.Attributes[svcTaskIDLabel]
-					svcName, ok := m.Actor.Attributes[svcNameLabel]
-					if !ok {
-						continue
-					}
-
-					task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
+			if m.Type == "service" {
+				log.Infoln(m.Type, m.Action, m)
+				switch(m.Action) {
+				case "create":
+					// get service labels
+					svc, _, err := cli.ServiceInspectWithRaw(ctx, m.Actor.ID, types.ServiceInspectOptions{})
 					if err != nil {
-						log.Errorln("watchEvents: error inspecting task:", err)
-						continue
+						log.WithFields(log.Fields{"serviceName": m.Actor.Attributes["name"]}).Errorln("failed to inspect:", err)
 					}
+					d , _ := json.Marshal(svc)
+					log.Infoln(string(d))
+				case "remove":
+				case "update":
+					svc, _, err := cli.ServiceInspectWithRaw(ctx, m.Actor.ID, types.ServiceInspectOptions{})
+					if err != nil {
+						log.WithFields(log.Fields{"serviceName": m.Actor.Attributes["name"]}).Errorln("failed to inspect:", err)
+					}
+					d , _ := json.Marshal(svc)
+					log.Infoln(string(d))
 
-					if task.Spec.ContainerSpec.Healthcheck != nil {
-						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("service has heathcheck, ignoring start event")
-						continue
-					}
+					//if m.Actor.Attributes[svcUpdateReplicasNewAttr] {}
 
-					syncTask(&task, cli, ctx, evtChan)
-
-				case "health_status":
-					taskId := m.Actor.Attributes[svcTaskIDLabel]
-					svcName, ok := m.Actor.Attributes[svcNameLabel]
-					if !ok {
-						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
-						continue
-					}
-
-					switch m.Status {
-					case "healthy":
-						task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
-						if err != nil {
-							log.Errorln("watchEvents: error inspecting task:", err)
-							continue
-						}
-						syncTask(&task, cli, ctx, evtChan)
-					default:
-						svcId := m.Actor.Attributes[svcIDLabel]
-						evtChan <- Event{
-							Action: ActionRemove,
-							Payload: utils.ServiceEndpoint{
-								ServiceID: svcId,
-								ServiceName: svcName,
-								TaskID: taskId,
-							},
-						}
-					}
-				case "stop", "kill":
-					taskId := m.Actor.Attributes[svcTaskIDLabel]
-					svcName, ok := m.Actor.Attributes[svcNameLabel]
-					if !ok {
-						log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
-						continue
-					}
-					svcId := m.Actor.Attributes[svcIDLabel]
-					evtChan <- Event{
-						Action: ActionRemove,
-						Payload: utils.ServiceEndpoint{
-							ServiceID: svcId,
-							ServiceName: svcName,
-							TaskID: taskId,
-						},
-					}
 				}
+			//} else if m.Type == events.ContainerEventType {
+			//	switch (m.Action) {
+			//	case  "start":
+			//		taskId := m.Actor.Attributes[svcTaskIDLabel]
+			//		svcName, ok := m.Actor.Attributes[svcNameLabel]
+			//		if !ok {
+			//			continue
+			//		}
+			//
+			//		task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
+			//		if err != nil {
+			//			log.Errorln("watchEvents: error inspecting task:", err)
+			//			continue
+			//		}
+			//
+			//		if task.Spec.ContainerSpec.Healthcheck != nil {
+			//			log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("service has heathcheck, ignoring start event")
+			//			continue
+			//		}
+			//
+			//		syncTask(&task, cli, ctx, evtChan)
+			//
+			//	case "health_status":
+			//		taskId := m.Actor.Attributes[svcTaskIDLabel]
+			//		svcName, ok := m.Actor.Attributes[svcNameLabel]
+			//		if !ok {
+			//			log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
+			//			continue
+			//		}
+			//
+			//		switch m.Status {
+			//		case "healthy":
+			//			task, _, err := cli.TaskInspectWithRaw(ctx, taskId)
+			//			if err != nil {
+			//				log.Errorln("watchEvents: error inspecting task:", err)
+			//				continue
+			//			}
+			//			syncTask(&task, cli, ctx, evtChan)
+			//		default:
+			//			svcId := m.Actor.Attributes[svcIDLabel]
+			//			evtChan <- Event{
+			//				Action: ActionRemove,
+			//				Payload: utils.ServiceEndpoint{
+			//					ServiceID: svcId,
+			//					ServiceName: svcName,
+			//					TaskID: taskId,
+			//				},
+			//			}
+			//		}
+			//	case "stop", "kill":
+			//		taskId := m.Actor.Attributes[svcTaskIDLabel]
+			//		svcName, ok := m.Actor.Attributes[svcNameLabel]
+			//		if !ok {
+			//			log.WithFields(log.Fields{"serviceName": svcName, "taskID": taskId}).Debugln("no service name label, not deregistering")
+			//			continue
+			//		}
+			//		svcId := m.Actor.Attributes[svcIDLabel]
+			//		evtChan <- Event{
+			//			Action: ActionRemove,
+			//			Payload: utils.ServiceEndpoint{
+			//				ServiceID: svcId,
+			//				ServiceName: svcName,
+			//				TaskID: taskId,
+			//			},
+			//		}
+			//	}
 			}
 		case <-resync:
 			log.Infoln("resyncing all endpoints")
