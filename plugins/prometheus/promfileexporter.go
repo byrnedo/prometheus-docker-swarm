@@ -1,9 +1,6 @@
-package promexport
+package prometheus
 
 import (
-	"sync"
-	"github.com/docker/docker/client"
-	"github.com/cskr/pubsub"
 	log "github.com/sirupsen/logrus"
 	"strconv"
 	"encoding/json"
@@ -11,7 +8,7 @@ import (
 	"crypto/md5"
 	"io/ioutil"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
-	"github.com/byrnedo/prometheus-docker-swarm/channels"
+	"github.com/byrnedo/prometheus-docker-swarm/plugins"
 )
 
 type PromServiceTargetsList struct {
@@ -22,27 +19,27 @@ type PromServiceTargetsList struct {
 type PromServiceTargetsFile []PromServiceTargetsList
 
 
-func StartPromExporter(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
-	ch := q.Sub(channels.ChannelCatalogChange)
-	prevHash := ""
-	for {
-		select {
-		case evt := <-ch:
-			switch evt {
-			case evt.(*utils.ServiceMap):
-				clg := evt.(*utils.ServiceMap)
+type PrometheusPlugin struct {
+	hash string
+}
 
-				if newHash, err := writeTargetsFile(clg, conf, prevHash); err != nil {
-					log.Errorln("writeTargetsFile:", err)
-				}else {
-					prevHash = newHash
-				}
+func (this *PrometheusPlugin) OnCatalogChange(endpoints *utils.ServiceMap, conf *utils.ConfigContext) {
 
-			}
-		}
+	if newHash, err := writeTargetsFile(endpoints, conf, this.hash); err != nil {
+		log.Errorln("writeTargetsFile:", err)
+	}else {
+		this.hash = newHash
 	}
-	log.Info("promexport: exitting")
-	wg.Done()
+
+}
+
+var (
+	p *PrometheusPlugin
+)
+
+func init() {
+	p = &PrometheusPlugin{}
+	plugins.Register(p)
 }
 
 func writeTargetsFile(serviceAddresses *utils.ServiceMap, conf *utils.ConfigContext, previousHash string) (string, error) {

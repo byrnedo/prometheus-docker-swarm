@@ -2,11 +2,10 @@ package catalog
 
 import (
 	"sync"
-	"github.com/docker/docker/client"
-	"github.com/cskr/pubsub"
 	log "github.com/sirupsen/logrus"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
-	"github.com/byrnedo/prometheus-docker-swarm/channels"
+	"github.com/byrnedo/prometheus-docker-swarm/dockerwatcher"
+	"github.com/byrnedo/prometheus-docker-swarm/plugins"
 )
 
 var (
@@ -18,20 +17,18 @@ func init(){
 }
 
 
-func StartCatalog(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
-	ch := q.Sub(channels.ChannelEndpointCreate, channels.ChannelEndpointRemove, channels.ChannelCatalogClobber)
+func StartCatalog(conf *utils.ConfigContext, wg *sync.WaitGroup, watchEvents <-chan dockerwatcher.Event) {
 	for {
 		select {
-		case evt := <-ch:
-			switch evt.(type) {
-			case *utils.ServiceMap:
-				newData := evt.(*utils.ServiceMap)
-				handleClobber(newData.CopyData(), q)
-			case utils.ServiceEndpoint:
-				sE := evt.(utils.ServiceEndpoint)
-				handleCreateRemove(sE, q)
-			default:
-				log.Error("catalog: unhandled message:", evt)
+		case evt := <-watchEvents:
+			if p := evt.GetClobberPayload(); p != nil {
+				handleClobber(p.CopyData(), conf)
+			} else if p := evt.GetCreatePayload(); p != nil {
+				handleCreate(p, conf)
+			} else if p := evt.GetRemovePayload(); p != nil {
+				handleRemove(p, conf)
+			} else {
+				log.Error("catalog: unhandled message:", evt.Action)
 			}
 		}
 	}
@@ -39,7 +36,7 @@ func StartCatalog(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGr
 	wg.Done()
 }
 
-func handleClobber(newData map[string][]utils.ServiceEndpoint, q *pubsub.PubSub) {
+func handleClobber(newData map[string][]utils.ServiceEndpoint, conf *utils.ConfigContext) {
 
 	toCreate := make(map[string]utils.ServiceEndpoint)
 	toRemove := make(map[string]utils.ServiceEndpoint)
@@ -76,26 +73,30 @@ func handleClobber(newData map[string][]utils.ServiceEndpoint, q *pubsub.PubSub)
 	}
 
 	if changed {
-		q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
+		// notify plugins
+		plugins.NotifyCatalogChange(servicesMap.Copy(), conf)
 	}
 
 }
 
-func handleCreateRemove(sE utils.ServiceEndpoint, q *pubsub.PubSub){
+func handleCreate(sE *utils.ServiceEndpoint, conf *utils.ConfigContext) {
 
-	if sE.Ip != "" {
-		// add
-		servicesMap.Append(sE.ServiceName, sE)
-		log.WithFields(log.Fields{"serviceName": sE.ServiceName, "serviceID": sE.ServiceID, "taskID": sE.TaskID, "ip": sE.Ip, "port": sE.Port}).Infoln("registering endpoint")
+	servicesMap.Append(sE.ServiceName, *sE)
+	log.WithFields(log.Fields{"serviceName": sE.ServiceName, "serviceID": sE.ServiceID, "taskID": sE.TaskID, "ip": sE.Ip, "port": sE.Port}).Infoln("registering endpoint")
 
-		q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
+	// notify plugins
+	plugins.NotifyCatalogChange(servicesMap.Copy(), conf)
+	//q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
+
+}
+func handleRemove(sE *utils.ServiceEndpoint, conf *utils.ConfigContext) {
+	// remove
+	if servicesMap.RemoveEndpoint(sE.ServiceName, sE.TaskID) {
+		log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Infoln("deregistering endpoint")
+		// notify plugins
+		plugins.NotifyCatalogChange(servicesMap.Copy(), conf)
+		//q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
 	} else {
-		// remove
-		if servicesMap.RemoveEndpoint(sE.ServiceName, sE.TaskID) {
-			log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Infoln("deregistering endpoint")
-			q.Pub(servicesMap.Copy(), channels.ChannelCatalogChange)
-		} else {
-			log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Debugln("no need to deregistering endpoint, not registered")
-		}
+		log.WithFields(log.Fields{"serviceName": sE.ServiceName, "taskID": sE.TaskID}).Debugln("no need to deregistering endpoint, not registered")
 	}
 }

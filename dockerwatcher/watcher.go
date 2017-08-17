@@ -9,9 +9,7 @@ import (
 	"sync"
 	"io"
 	"github.com/docker/docker/api/types/events"
-	"github.com/cskr/pubsub"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
-	"github.com/byrnedo/prometheus-docker-swarm/channels"
 	"time"
 )
 
@@ -20,10 +18,43 @@ const (
 	svcIDLabel = "com.docker.swarm.service.id"
 	svcTaskIDLabel = "com.docker.swarm.task.id"
 
+	ActionClobber = "clobber"
+	ActionCreate = "create"
+	ActionRemove = "remove"
+
 )
 
+type Event struct {
+	Action string
+	Payload interface{}
+}
 
-func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubsub.PubSub) {
+func (this *Event) GetClobberPayload() *utils.ServiceMap {
+	if this.Action != ActionClobber {
+		return nil
+	}
+	d := this.Payload.(utils.ServiceMap)
+	return &d
+}
+
+func (this *Event) GetCreatePayload() *utils.ServiceEndpoint {
+	if this.Action != ActionCreate {
+		return nil
+	}
+	d := this.Payload.(utils.ServiceEndpoint)
+	return &d
+}
+
+func (this *Event) GetRemovePayload() *utils.ServiceEndpoint {
+	if this.Action != ActionRemove {
+		return nil
+	}
+	d := this.Payload.(utils.ServiceEndpoint)
+	return &d
+}
+
+
+func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, evtChan chan <- Event) {
 
 	hasMetricsEndpoint, metricsPort, _ := utils.ParseMetricsEndpointEnv(task.Spec.ContainerSpec.Env)
 	if !hasMetricsEndpoint {
@@ -40,13 +71,16 @@ func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubs
 	if len(task.NetworksAttachments) > 0 && len(task.NetworksAttachments[0].Addresses) > 0 {
 		ip := utils.ExtractIpFromNetmask(task.NetworksAttachments[0].Addresses[0])
 
-		q.Pub(utils.ServiceEndpoint{
-			ServiceID: task.ServiceID,
-			ServiceName: svcName,
-			TaskID: task.ID,
-			Port: metricsPort,
-			Ip: ip,
-		}, channels.ChannelEndpointCreate)
+		evtChan <- Event{
+			Action: ActionCreate,
+			Payload: utils.ServiceEndpoint{
+				ServiceID: task.ServiceID,
+				ServiceName: svcName,
+				TaskID: task.ID,
+				Port: metricsPort,
+				Ip: ip,
+			},
+		}
 
 	} else {
 
@@ -55,7 +89,7 @@ func syncTask(task *swarm.Task, cli *client.Client, ctx context.Context, q *pubs
 
 }
 
-func clobberTargets(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub) (error) {
+func clobberTargets(cli *client.Client, conf *utils.ConfigContext, evtChan chan <- Event) (error) {
 
 	ctx := context.Background()
 	// list tasks
@@ -105,7 +139,10 @@ func clobberTargets(cli *client.Client, conf *utils.ConfigContext, q *pubsub.Pub
 
 	if toClobber.Len() > 0{
 		log.Debugln("publishing clobber")
-		q.Pub(toClobber, channels.ChannelCatalogClobber)
+		evtChan <- Event {
+			Action: ActionClobber,
+			Payload: *toClobber,
+		}
 	} else {
 
 		log.Debugln("not publishing clobber")
@@ -115,7 +152,7 @@ func clobberTargets(cli *client.Client, conf *utils.ConfigContext, q *pubsub.Pub
 
 }
 
-func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub) {
+func watchEvents(cli *client.Client, conf *utils.ConfigContext, evtChan chan <- Event) {
 
 	var (
 		ctx = context.Background()
@@ -124,7 +161,7 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub
 	resync := time.NewTicker(conf.ResyncInterval).C
 
 	log.Infoln("resyncing all endpoints")
-	err := clobberTargets(cli, conf, q )
+	err := clobberTargets(cli, conf, evtChan)
 	if err != nil {
 		log.Errorln("clobberTargets:", err)
 	}
@@ -159,7 +196,7 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub
 						continue
 					}
 
-					syncTask(&task, cli, ctx, q)
+					syncTask(&task, cli, ctx, evtChan)
 
 				case "health_status":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -176,14 +213,17 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub
 							log.Errorln("watchEvents: error inspecting task:", err)
 							continue
 						}
-						syncTask(&task, cli, ctx, q)
+						syncTask(&task, cli, ctx, evtChan)
 					default:
 						svcId := m.Actor.Attributes[svcIDLabel]
-						q.Pub( utils.ServiceEndpoint{
-							ServiceID: svcId,
-							ServiceName: svcName,
-							TaskID: taskId,
-						}, channels.ChannelEndpointRemove)
+						evtChan <- Event{
+							Action: ActionRemove,
+							Payload: utils.ServiceEndpoint{
+								ServiceID: svcId,
+								ServiceName: svcName,
+								TaskID: taskId,
+							},
+						}
 					}
 				case "stop", "kill":
 					taskId := m.Actor.Attributes[svcTaskIDLabel]
@@ -193,16 +233,19 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub
 						continue
 					}
 					svcId := m.Actor.Attributes[svcIDLabel]
-					q.Pub( utils.ServiceEndpoint{
-						ServiceID: svcId,
-						ServiceName: svcName,
-						TaskID: taskId,
-					}, channels.ChannelEndpointRemove)
+					evtChan <- Event{
+						Action: ActionRemove,
+						Payload: utils.ServiceEndpoint{
+							ServiceID: svcId,
+							ServiceName: svcName,
+							TaskID: taskId,
+						},
+					}
 				}
 			}
 		case <-resync:
 			log.Infoln("resyncing all endpoints")
-			err := clobberTargets(cli, conf, q)
+			err := clobberTargets(cli, conf, evtChan)
 			if err != nil {
 				log.Errorln("clobberTargets:", err)
 			}
@@ -210,9 +253,9 @@ func watchEvents(cli *client.Client, conf *utils.ConfigContext, q *pubsub.PubSub
 	}
 }
 
-func StartWatcher(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, q *pubsub.PubSub) {
+func StartWatcher(cli *client.Client, conf *utils.ConfigContext, wg *sync.WaitGroup, evtChan chan <- Event) {
 	defer wg.Done()
 	log.Infoln("startWatcher: starting events watcher")
-	watchEvents(cli, conf, q)
+	watchEvents(cli, conf, evtChan)
 	log.Info("watcher: exitting")
 }

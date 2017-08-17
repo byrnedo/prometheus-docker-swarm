@@ -8,10 +8,8 @@ import (
 	"os"
 	"errors"
 	"strings"
-	"github.com/cskr/pubsub"
 	"github.com/byrnedo/prometheus-docker-swarm/dockerwatcher"
 	"github.com/byrnedo/prometheus-docker-swarm/utils"
-	"github.com/byrnedo/prometheus-docker-swarm/promexport"
 	"github.com/byrnedo/prometheus-docker-swarm/catalog"
 	"time"
 )
@@ -25,7 +23,6 @@ func main() {
 		promTargetsPath string
 		logLevel string
 		hardResyncInterval time.Duration
-		evtSubs uint
 	)
 	app := cli.NewApp()
 	app.Name = "prometheus-docker-swarm"
@@ -58,12 +55,6 @@ func main() {
 			Value:       "info",
 			Usage:       "log level",
 			Destination: &logLevel,
-		},
-		cli.UintFlag{
-			Name:        "subscribers",
-			Value:       200,
-			Usage:       "max number of subscribers to events",
-			Destination: &evtSubs,
 		},
 	}
 
@@ -108,22 +99,16 @@ func main() {
 		wg := &sync.WaitGroup{}
 
 
-		// + 1 since we sub to it
-
-		q := pubsub.New(100)
 
 		wg.Add(1)
 
-		go dockerwatcher.StartWatcher(client, conf, wg, q)
+		watchEventsChan := make(chan dockerwatcher.Event)
+
+		go dockerwatcher.StartWatcher(client, conf, wg, watchEventsChan)
 
 		wg.Add(1)
 
-		go catalog.StartCatalog(client, conf, wg, q)
-
-		wg.Add(1)
-
-		go promexport.StartPromExporter(client, conf, wg, q)
-
+		go catalog.StartCatalog(conf, wg, watchEventsChan)
 
 		wg.Wait()
 
